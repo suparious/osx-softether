@@ -1,159 +1,105 @@
-#/bin/bash
-######
-# SoftEther VPN Client wrapper for OSX and Linux
-# Shaun Prince - TriNimbus Technologies, inc.
-###
+#!/bin/bash
+##########################################################
+# An elaborate SoftEther VPN software control script
+#
+# 2015-12-22 -Shaun Prince - TriNimbus Technologies, Inc.
+#
+##########################################################
 
-## Configuration
-CLIENT="/var/root/vpnclient"       # Where the binaries are installed
-TAP="tap0"                         # Your tunnel/tap interface
-VNIC="PccProd"                     # SoftEther virtual network interface
-SUBNET="172.18.0.0/16"             # Destination subnet CIDR
-GATEWAY="172.18.160.1"             # Destination router
-ACCOUNT="PCC"                      # SoftEther VPN Client account settings
+# Configuration
+RUN=vpncmd
+RUN_DIR=~/bin/vpnclient
+SERVER=localhost
 
-## Declare functions
-# make sure that state is not carried through multiple executions of this script
-function cleanup {
-  iam=""
-  vnicconnect=""
-  network=""
-  virtualnic=""
-  vpnstatus=""
-  me=""
-  interface=""
-  iam=`whoami`
-  me=`basename "$0"`
-}
+# Main Program
+cd $RUN_DIR
+export ARG1=$1
+export ARG2=$2
 
-# debugging and error output of current state
-function dumpvars {
-  echo "iam: $iam"
-  echo "vnicconnect: $vnicconnect"
-  echo "network: $network"
-  echo "virtualnic: $virtualnic"
-  echo "vpnstatus: $vpnstatus"
-  echo "me: $me"
-  echo "interface: $interface"
-}
-
-function checkRequirements {
-  echo "Running $me:$CLIENT-$ACCOUNT-$TAP-$VNIC-$SUBNET-$GATEWAY as $iam"
-  if [[ $iam == "root" ]]; then
-    echo "Sufficient permissions available"
-    vnicconnect=`ps -ef | grep vpnclient | grep execsvc | tail -n 1 | awk -F " " {'print $9'}`
-    if [[ $vnicconnect == "execsvc" ]]; then
-      network="available"
-      echo "Network VPN client service is $network"
-      virtualnic=`$CLIENT/vpncmd localhost /CLIENT /CMD NicList | grep $VNIC | awk -F "|" {'print $2'}`
-      if [[ $virtualnic == $VNIC ]]; then
-        network="configured"
-        echo "Network VPN client service is $network"
-        vpnstatus=`$CLIENT/vpncmd localhost /CLIENT /CMD AccountList | grep Status | awk -F "|" {'print $2'}`
-        if [[ $vpnstatus == "Offline" ]]; then
-          network="ready"
-          echo "Network VPN client service is $network and VPN is $vpnstatus"
-        else
-          if [[ $vpnstatus == "Connected" ]]; then
-            network="connected"
-            echo "Network VPN client service is $network and VPN is $vpnstatus"
-          else
-            network="unconfigured"
-            echo "Network VPN client service is $network"
-            dumpvars
-            echo "try something like: $CLIENT/vpncmd localhost /CLIENT /CMD AccountCreate PCC"
-            exit 1
-          fi
-        fi
-      else
-        network="notready"
-        echo "Network VPN client service is $network"
-        dumpvars
-        echo "try something like: $CLIENT/vpncmd localhost /CLIENT /CMD NicCreate $VNIC"
-        exit 1
-      fi
+# Declare functions
+function operation {
+  # Executing requested operation
+  echo "Connecting to \"$ARG1\"."
+  ./$RUN $SERVER /client /CMD="account$status $ARG1"
+  if [ "$?" = "0" ]
+  then
+    echo "Operation \"$ARG2\" to site \"$ARG1\" executed successfully."
+    # Request DHCP lease from the remote server
+    if [ "$ARG2" = "start" ]
+    then
+      network=`sudo /sbin/ifconfig | grep -i $ARG1 | awk '{ print $1 }'`
+      echo "Bringing up VPN interface \"$network\"."
+      sudo dhclient $network
+    if [ "$?" = "0" ]
+    then
+      echo "Successfully connected to \"$ARG1\"."
+      exit 0
     else
-      network="notstarted"
-      echo "Network VPN client service is $network"
-      #interface=`ifconfig | grep $TAP | awk -F ":" {'print $1'}`
+      error
     fi
+    exit 0
   else
-    network="unknown"
-    echo "Insufficient permissions to continue"
-    dumpvars
-    echo "try something like: sudo $me, or sudo ./$me"
+    echo "Operation \"$ARG2\" to \"$ARG1\" failed. Check the VPN Client config name, refer to the above error or use 'vpncmd list' to get a list of valid names."
     exit 1
   fi
 }
 
-function start {
-  if [[ $network == "notstarted" ]]; then
-    cd $CLIENT && $CLIENT/vpnclient start
-    checkRequirements
-  fi
-  case $network in
-    connected)
-      echo "Already connected, please disconnect first using: $me stop"
-      ;;
-    ready)
-      echo "Connecting to $ACCOUNT..."
-      $CLIENT/vpncmd localhost /CLIENT /CMD AccountConnect $ACCOUNT
-      sleep 5
-      checkRequirements
-      if [[ $vpnstatus == "Connected" ]]; then
-        ipconfig set $TAP DHCP
-        sleep 10
-        route -n add $SUBNET $GATEWAY
-        echo "Done!"
-      else
-        echo "Connection to $ACCOUNT has failed"
-        dumpvars
-        stop
-        exit 1
-      fi
-      ;;
-    *)
-      echo "Network is not ready, please review the console output, check network status and/or VPN account settings"
-      dumpvars
-      exit 1
-      ;;
+function usage {
+  echo "usage: vpncmd list | <site> <operation>"
+  echo ""
+  echo "parameters:"
+  echo "list	- List the currently configured accounts"
+  echo "site	- specify a site connection name to perform an operation. ignored when used with 'list'."
+  echo "operation - 'stop', 'start' and 'status' are the only valid operations. Ignored when used with 'list'."
+  echo ""
+  exit 0
+}
+
+function error {
+  echo "Something messed-up. Please check your syntax."
+  echo ""
+  usage
+  exit 1
+}
+
+function notfound {
+  echo "The specified VPN Client name was incorrect or no longer exists. To view the available list, try 'vpncmd list'."
+  echo ""
+  error
+  usage
+  exit 1
+}
+
+# Parse the user input
+if [ -z "$1" ]
+then
+  # assume interactive
+  ./vpncmd
+else
+
+  # Check for account listing only
+  case "$1" in
+    list) echo "Listing VPN Client accounts"
+      ./$RUN $SERVER /client /CMD=accountlist
+      exit 0
+    ;;
+    *) # Qualify the requested operation
+      case "$2" in
+        start) echo "Executing VPN Client Connect"
+          export status=connect
+          operation
+        ;;
+        stop) echo "Executing VPN Client Disconnect"
+          export status=disconnect
+          operation
+        ;;
+        status) echo "Executing VPN Client status"
+          export status=get
+          operation
+        ;;
+        *) error
+        ;;
+      esac
+    ;;
   esac
-}
-
-
-#$CLIENT/vpncmd localhost /CLIENT /CMD NicEnable $VNIC
-#
-
-
-function stop { # disconnect and clean-up
-  $CLIENT/vpncmd localhost /CLIENT /CMD AccountDisconnect PCC
-  sleep 2
-  $CLIENT/vpnclient stop
-  sleep 1
-  sudo route -n delete $SUBNET
-  echo "Disconnected and cleaned-up the mess"
-}
-
-## Main program
-# accept command switches
-case $1 in
-  check)
-    echo "$me: Checking requirements..."
-    cleanup
-    checkRequirements
-    ;;
-  start)
-    echo "$me: Connecting to $ACCOUNT..."
-    cleanup
-    checkRequirements
-    start
-    ;;
-  stop)
-    echo "$me: Disconnecting, and cleaning-up the mess..."
-    cleanup
-    stop
-    ;;
-  *)
-    echo "Usage: $me check|start|stop"
-    ;;
-esac
+fi
